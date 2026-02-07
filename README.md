@@ -2,6 +2,7 @@
 
 ## Project Structure
 
+```txt
 ProjectFolder/
 ├── certs/              # SSL Certificates (server.crt, server.key)
 ├── common/             # Shared logic
@@ -17,6 +18,7 @@ ProjectFolder/
 │   └── engine.c        # Scheduling & state logic
 ├── build/              # Compiled binaries
 └── Makefile            # Build configuration
+```
 
 ## Creare Chei
 
