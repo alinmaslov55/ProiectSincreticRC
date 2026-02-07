@@ -46,4 +46,6 @@ typedef struct __attribute__((packed)) {
     char password_hash[64];
 } LoginPayload;
 
+const char* get_packet_name(PacketType type);
+
 #endif // PROTOCOL_H

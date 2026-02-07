@@ -38,24 +38,43 @@ void log_state(const char *message) {
 bool perform_login(SSL *ssl) {
     PacketHeader header = {REQ_LOGIN, sizeof(LoginPayload)};
     LoginPayload login;
-    memset(&login, 0, sizeof(login));
+    int attempts = 0;
+    const int MAX_ATTEMPTS = 3;
 
-    // Mocking credentials - In a real app, use scanf
-    strncpy(login.student_id, "STUDENT001", 15);
-    strncpy(login.password_hash, "hashed_pass_123", 63);
+    while (attempts < MAX_ATTEMPTS) {
+        memset(&login, 0, sizeof(login));
 
-    log_state("Sending Login Credentials");
-    SSL_write(ssl, &header, sizeof(header));
-    SSL_write(ssl, &login, sizeof(login));
+        printf(BLUE BOLD "\n--- OmniTest Secure Login (Attempt %d/%d) ---\n" RESET, attempts + 1, MAX_ATTEMPTS);
+        printf("Enter Student ID: ");
+        fgets(login.student_id, sizeof(login.student_id), stdin);
+        login.student_id[strcspn(login.student_id, "\n")] = 0;
 
-    PacketHeader res_header;
-    int bytes = SSL_read(ssl, &res_header, sizeof(res_header));
-    
-    if (bytes == sizeof(PacketHeader) && res_header.type == RES_LOGIN_SUCCESS) {
-        log_state("Login Accepted");
-        return true;
+        printf("Enter Password: ");
+        fgets(login.password_hash, sizeof(login.password_hash), stdin);
+        login.password_hash[strcspn(login.password_hash, "\n")] = 0;
+
+        // Log and Send
+        if (client_log) fprintf(client_log, "[TX] Sent: %s (Attempt %d)\n", p_name(header.type), attempts + 1);
+        SSL_write(ssl, &header, sizeof(header));
+        SSL_write(ssl, &login, sizeof(login));
+
+        // Wait for result
+        PacketHeader res_header;
+        int bytes = SSL_read(ssl, &res_header, sizeof(res_header));
+        
+        if (bytes == sizeof(PacketHeader)) {
+            if (client_log) fprintf(client_log, "[RX] Received: %s\n", p_name(res_header.type));
+            
+            if (res_header.type == RES_LOGIN_SUCCESS) {
+                return true;
+            } else {
+                printf(RED "Invalid credentials. Please try again.\n" RESET);
+            }
+        }
+        attempts++;
     }
-    log_state("Login Rejected");
+
+    log_state("Maximum login attempts reached.");
     return false;
 }
 
