@@ -15,19 +15,32 @@
 #define SERVER_IP "127.0.0.1"
 #define PORT 8080
 
-// --- UI Macros ---
+// --- UI Macros (Fixed: Added CYAN) ---
 #define RESET   "\033[0m"
 #define BOLD    "\033[1m"
 #define RED     "\033[1;31m"
 #define GREEN   "\033[1;32m"
 #define YELLOW  "\033[1;33m"
 #define BLUE    "\033[1;34m"
+#define CYAN    "\033[1;36m"
 #define CLEAR   "\033[H\033[J"
 
-// --- Global Log Pointer ---
 FILE *client_log = NULL;
 
-// --- Helper Functions ---
+const char* p_name(PacketType type) {
+    switch(type) {
+        case REQ_LOGIN: return "REQ_LOGIN";
+        case RES_LOGIN_SUCCESS: return "RES_LOGIN_SUCCESS";
+        case RES_LOGIN_FAILED: return "RES_LOGIN_FAILED";
+        case REQ_EXAM_START: return "REQ_EXAM_START";
+        case MSG_EXAM_QUESTION: return "MSG_EXAM_QUESTION";
+        case MSG_SUBMISSION: return "MSG_SUBMISSION";
+        case RES_SUBMISSION_ACK: return "RES_SUBMISSION_ACK";
+        case MSG_EXAM_OVER: return "MSG_EXAM_OVER";
+        default: return "UNKNOWN_PACKET";
+    }
+}
+
 void log_state(const char *message) {
     if (client_log) {
         fprintf(client_log, "[%ld] %s\n", (long)time(NULL), message);
@@ -39,91 +52,87 @@ bool perform_login(SSL *ssl) {
     PacketHeader header = {REQ_LOGIN, sizeof(LoginPayload)};
     LoginPayload login;
     int attempts = 0;
-    const int MAX_ATTEMPTS = 3;
-
-    while (attempts < MAX_ATTEMPTS) {
+    while (attempts < 3) {
         memset(&login, 0, sizeof(login));
-
-        printf(BLUE BOLD "\n--- OmniTest Secure Login (Attempt %d/%d) ---\n" RESET, attempts + 1, MAX_ATTEMPTS);
-        printf("Enter Student ID: ");
-        fgets(login.student_id, sizeof(login.student_id), stdin);
+        printf(BLUE BOLD "\n--- OmniTest Login (Attempt %d/3) ---\n" RESET, attempts + 1);
+        printf("ID: "); if(!fgets(login.student_id, 16, stdin)) break;
         login.student_id[strcspn(login.student_id, "\n")] = 0;
-
-        printf("Enter Password: ");
-        fgets(login.password_hash, sizeof(login.password_hash), stdin);
+        printf("Pass: "); if(!fgets(login.password_hash, 64, stdin)) break;
         login.password_hash[strcspn(login.password_hash, "\n")] = 0;
 
-        // Log and Send
-        if (client_log) fprintf(client_log, "[TX] Sent: %s (Attempt %d)\n", p_name(header.type), attempts + 1);
         SSL_write(ssl, &header, sizeof(header));
         SSL_write(ssl, &login, sizeof(login));
 
-        // Wait for result
-        PacketHeader res_header;
-        int bytes = SSL_read(ssl, &res_header, sizeof(res_header));
+        PacketHeader res;
+        if (SSL_read(ssl, &res, sizeof(res)) <= 0) break;
+        if (res.type == RES_LOGIN_SUCCESS) return true;
         
-        if (bytes == sizeof(PacketHeader)) {
-            if (client_log) fprintf(client_log, "[RX] Received: %s\n", p_name(res_header.type));
-            
-            if (res_header.type == RES_LOGIN_SUCCESS) {
-                return true;
-            } else {
-                printf(RED "Invalid credentials. Please try again.\n" RESET);
-            }
-        }
+        printf(RED "Invalid credentials.\n" RESET);
         attempts++;
     }
-
-    log_state("Maximum login attempts reached.");
     return false;
 }
 
-void start_exam_session(SSL *ssl) {
-    log_state("Initiating Exam Session");
+// Fixed: Changed return type from void to bool to support retry logic
+bool start_exam_session(SSL *ssl) {
     PacketHeader start_req = {REQ_EXAM_START, 0};
     SSL_write(ssl, &start_req, sizeof(start_req));
 
+    // Peek to see if server sends a question or closes the connection
+    PacketHeader first_check;
+    int bytes = SSL_read(ssl, &first_check, sizeof(first_check));
+    
+    if (bytes <= 0) {
+        // Server closed connection because it is in REGISTRATION mode
+        return false; 
+    }
+
+    // If we are here, the server sent the first question or signal
+    bool session_active = true;
     int server_fd = SSL_get_fd(ssl);
     int stdin_fd = fileno(stdin);
     int max_fd = (server_fd > stdin_fd) ? server_fd : stdin_fd;
 
-    while (1) {
-        fd_set read_fds;
-        FD_ZERO(&read_fds);
-        FD_SET(server_fd, &read_fds);
-        FD_SET(stdin_fd, &read_fds);
+    while (session_active) {
+        // Re-process the first_check header we already read if it was a question
+        PacketHeader current_h = first_check;
+        bool skip_read = true; // For the very first iteration
 
-        // Multiplexing between Server and Keyboard
-        if (select(max_fd + 1, &read_fds, NULL, NULL, NULL) < 0) {
-            log_state("Select error occurred");
-            break;
-        }
+        while (session_active) {
+            if (!skip_read) {
+                fd_set read_fds;
+                FD_ZERO(&read_fds);
+                FD_SET(server_fd, &read_fds);
+                FD_SET(stdin_fd, &read_fds);
+                if (select(max_fd + 1, &read_fds, NULL, NULL, NULL) < 0) break;
 
-        // 1. Data from Server
-        if (FD_ISSET(server_fd, &read_fds)) {
-            PacketHeader msg_header;
-            int bytes = SSL_read(ssl, &msg_header, sizeof(PacketHeader));
-            if (bytes <= 0) {
-                log_state("Server disconnected abruptly");
-                break;
+                if (FD_ISSET(server_fd, &read_fds)) {
+                    if (SSL_read(ssl, &current_h, sizeof(PacketHeader)) <= 0) break;
+                } else if (FD_ISSET(stdin_fd, &read_fds)) {
+                    SubmissionPayload sub;
+                    if (fgets(sub.answer_text, sizeof(sub.answer_text), stdin)) {
+                        sub.answer_text[strcspn(sub.answer_text, "\n")] = 0;
+                        PacketHeader sub_head = {MSG_SUBMISSION, sizeof(SubmissionPayload)};
+                        SSL_write(ssl, &sub_head, sizeof(PacketHeader));
+                        SSL_write(ssl, &sub, sizeof(SubmissionPayload));
+                    }
+                    continue;
+                }
             }
+            skip_read = false;
 
-            if (msg_header.type == MSG_EXAM_QUESTION) {
+            if (current_h.type == MSG_EXAM_QUESTION) {
                 ExamQuestionPayload q;
                 SSL_read(ssl, &q, sizeof(q));
-                log_state("Received Question packet");
-
                 printf(CLEAR BLUE "====================================================\n" RESET);
                 printf(BOLD " OMNITEST SECURE CAMPUS - EXAM IN PROGRESS\n" RESET);
-                const char* t_color = (q.time_remaining < 15) ? RED : GREEN;
-                printf(" Time Remaining: %s%d seconds%s\n", t_color, q.time_remaining, RESET);
+                printf(" Time Remaining: %d seconds\n", q.time_remaining);
                 printf(BOLD "\n Q%d: %s\n" RESET, q.question_id, q.question_text);
                 for (int i = 0; i < 4; i++) printf("  [%d] %s\n", i, q.options[i]);
                 printf(YELLOW "\n Your Answer (0-3): " RESET);
                 fflush(stdout);
             } 
-            else if (msg_header.type == MSG_EXAM_OVER) {
-                log_state("Received Exam Over packet");
+            else if (current_h.type == MSG_EXAM_OVER) {
                 ExamResultPayload res;
                 SSL_read(ssl, &res, sizeof(res));
                 printf(CLEAR YELLOW "====================================================\n" RESET);
@@ -131,74 +140,69 @@ void start_exam_session(SSL *ssl) {
                 printf("\n Final Score: " GREEN BOLD "%d / %d\n" RESET, res.score, res.total_questions);
                 printf("\n Press [ENTER] to exit.");
                 fflush(stdout);
-                
-                char dummy[10];
-                fgets(dummy, sizeof(dummy), stdin);
-                break;
-            }
-        }
-
-        // 2. Data from Student (Keyboard)
-        if (FD_ISSET(stdin_fd, &read_fds)) {
-            SubmissionPayload sub;
-            if (fgets(sub.answer_text, sizeof(sub.answer_text), stdin)) {
-                log_state("User input detected and sent");
-                sub.answer_text[strcspn(sub.answer_text, "\n")] = 0;
-                
-                PacketHeader sub_head = {MSG_SUBMISSION, sizeof(SubmissionPayload)};
-                SSL_write(ssl, &sub_head, sizeof(PacketHeader));
-                SSL_write(ssl, &sub, sizeof(SubmissionPayload));
+                getchar();
+                session_active = false;
             }
         }
     }
+    return true;
 }
 
 int main() {
-    // Logging Setup
     mkdir("logs", 0777);
     char log_filename[64];
     snprintf(log_filename, sizeof(log_filename), "logs/client_%d.log", getpid());
     client_log = fopen(log_filename, "w");
-    log_state("Process Started");
 
     init_openssl();
     SSL_CTX *ctx = create_context(false);
+    bool exam_finished = false;
 
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
-    struct sockaddr_in server_addr;
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(PORT);
-    inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr);
+    printf(YELLOW BOLD "OmniTest Secure Client: Connecting to Proctor...\n" RESET);
 
-    log_state("Connecting to server...");
-    if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        log_state("Connection Failed");
-        perror("Connection failed");
-        exit(EXIT_FAILURE);
-    }
+    while (!exam_finished) {
+        int sock = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in server_addr = { .sin_family = AF_INET, .sin_port = htons(PORT) };
+        inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr);
 
-    SSL *ssl = SSL_new(ctx);
-    SSL_set_fd(ssl, sock);
-
-    if (SSL_connect(ssl) <= 0) {
-        log_state("SSL Handshake Failed");
-        ERR_print_errors_fp(stderr);
-    } else {
-        log_state("SSL Tunnel Established");
-        if (perform_login(ssl)) {
-            start_exam_session(ssl); 
-        } else {
-            printf(RED "Access Denied: Invalid Credentials.\n" RESET);
+        if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+            printf(RED "Proctor Node Offline. Retrying in 5s...\n" RESET);
+            close(sock);
+            sleep(5);
+            continue;
         }
+
+        SSL *ssl = SSL_new(ctx);
+        SSL_set_fd(ssl, sock);
+
+        if (SSL_connect(ssl) <= 0) {
+            SSL_free(ssl);
+            close(sock);
+            sleep(5);
+            continue;
+        }
+
+        if (perform_login(ssl)) {
+            // Check if start_exam_session returns true (Exam taken) or false (Still in Registration)
+            if (start_exam_session(ssl)) {
+                exam_finished = true; 
+            } else {
+                printf(CYAN "Status: Registered. Waiting for Proctor to signal 'START'...\n" RESET);
+            }
+        } else {
+            printf(RED "Fatal: Authentication failed.\n" RESET);
+            exam_finished = true;
+        }
+
         SSL_shutdown(ssl);
+        SSL_free(ssl);
+        close(sock);
+
+        if (!exam_finished) sleep(5);
     }
 
-    log_state("Exiting normally");
-    SSL_free(ssl);
-    close(sock);
     SSL_CTX_free(ctx);
     cleanup_openssl();
     if (client_log) fclose(client_log);
-
     return 0;
 }

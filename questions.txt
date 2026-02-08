@@ -1,0 +1,20 @@
+Which keyword is used to prevent a variable from being modified?|volatile|mutable|const|static|2
+What is the return type of the malloc() function?|int*|void*|char*|float*|1
+Which operator is used to access the address of a variable?|*|->|&|.|2
+What is the standard size of an 'int' on a 64-bit system?|2 bytes|4 bytes|8 bytes|Depends on compiler|1
+Which header file is required for the 'printf' function?|stdlib.h|string.h|stdio.h|math.h|2
+What does the 'SSL_read' function return on success?|0|1|Number of bytes read|-1|2
+Which data structure is used to manage function calls in C?|Queue|Stack|Tree|Linked List|1
+What is the purpose of 'pthread_detach'?|Kill a thread|Release resources on exit|Join two threads|Stop a mutex|1
+Which of the following is NOT a valid storage class in C?|auto|register|extern|dynamic|3
+What is the result of '5 >> 1' in C?|10|5|2|1|2
+Which signal is sent when you press Ctrl+C in the terminal?|SIGKILL|SIGTERM|SIGINT|SIGSTOP|2
+What is a 'zombie' process in Unix?|A process that cannot be killed|A process with no parent|A terminated process still in the table|A process using 100% CPU|2
+What is the maximum value of an unsigned 8-bit integer?|127|128|255|256|2
+Which SSL function is used to perform the server-side handshake?|SSL_connect|SSL_accept|SSL_write|SSL_new|1
+What is the purpose of 'struct termios'?|File I/O|Socket config|Terminal I/O settings|Memory mapping|2
+In C, what is the index of the last element in an array of size N?|N|N+1|N-1|1|2
+Which function is used to compare two strings in C?|strcmp|strcat|strcpy|strlen|0
+What does the 'O_APPEND' flag do in 'open()'?|Overwrites file|Sets read-only|Moves cursor to EOF|Deletes file|2
+What is a 'mutex' used for?|Memory allocation|Thread synchronization|File compression|Process forking|1
+What does 'sizeof(char)' always return in C?|1|2|4|8|0
