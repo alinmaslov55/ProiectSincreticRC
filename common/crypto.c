@@ -4,6 +4,24 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
+/**
+ * Data types Used:
+ * SSL_CTX (SSL Context) - Retine configuratia globala a conexiunii
+ * (versiunea de tls suportata, locatia certificatelor in server)
+ * 
+ * SSL_METHOD - asigura ca programul isi indeplineste rolul corect (client/server)
+ * si foloseste versiunea TLS dorita
+ * 
+ * SSL_FILETYPE_PEM - macro utilizat pentru ca sa se inteleaga formatul sub care este scrisa key-ul/certificatul (PEM in cazul nostru)
+ * 
+ * SSL_load_error_strings(): Incarca descrieri e erorilor pe intelesul uman
+ * 
+ * OpenSSL_add_ssl_algorithms(): Inregistreaza toate algoritmii de criptare AES, SHA-256
+ * 
+ * EVP_cleanup() - apelat la sfarsit pentru a elibera resursele alocate de OpenSSL
+ */
+
+
 void init_openssl() {
     SSL_load_error_strings();
     OpenSSL_add_ssl_algorithms();
@@ -30,7 +48,7 @@ SSL_CTX *create_context(bool is_server){
 }
 
 void configure_server_context(SSL_CTX *ctx){
-    if(SSL_CTX_use_certificate_file(ctx, "certs/server.crt", SSL_FILETYPE_PEM) <= 0){
+    if(SSL_CTX_use_certificate_file(ctx, "certs/server.crt", SSL_FILETYPE_PEM) <= 0){ // returneaza 1 la succes
         ERR_print_errors_fp(stderr);
         exit(EXIT_FAILURE);
     }

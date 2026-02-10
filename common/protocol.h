@@ -6,6 +6,10 @@
 #define MAX_NAME_LEN 64
 #define MAX_BUFFER 1024
 
+/**
+ * __attribute__((packed)) - instructiune care compiler pentru a preveni sa adauge padding/spatii intre campurile din strcuturi
+ */
+
 // Packet Types
 typedef enum {
     REQ_LOGIN,

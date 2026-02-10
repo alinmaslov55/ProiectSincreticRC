@@ -11,11 +11,9 @@
 #include <sys/stat.h>
 #include <time.h>
 
-// --- Configuration ---
 #define SERVER_IP "127.0.0.1"
 #define PORT 8080
 
-// --- UI Macros (Fixed: Added CYAN) ---
 #define RESET   "\033[0m"
 #define BOLD    "\033[1m"
 #define RED     "\033[1;31m"
@@ -54,7 +52,7 @@ bool perform_login(SSL *ssl) {
     int attempts = 0;
     while (attempts < 3) {
         memset(&login, 0, sizeof(login));
-        printf(BLUE BOLD "\n--- OmniTest Login (Attempt %d/3) ---\n" RESET, attempts + 1);
+        printf(BLUE BOLD "\n--- TEST-SIMULATOR Login (Attempt %d/3) ---\n" RESET, attempts + 1);
         printf("ID: "); if(!fgets(login.student_id, 16, stdin)) break;
         login.student_id[strcspn(login.student_id, "\n")] = 0;
         printf("Pass: "); if(!fgets(login.password_hash, 64, stdin)) break;
@@ -73,30 +71,25 @@ bool perform_login(SSL *ssl) {
     return false;
 }
 
-// Fixed: Changed return type from void to bool to support retry logic
 bool start_exam_session(SSL *ssl) {
     PacketHeader start_req = {REQ_EXAM_START, 0};
     SSL_write(ssl, &start_req, sizeof(start_req));
 
-    // Peek to see if server sends a question or closes the connection
     PacketHeader first_check;
     int bytes = SSL_read(ssl, &first_check, sizeof(first_check));
     
     if (bytes <= 0) {
-        // Server closed connection because it is in REGISTRATION mode
         return false; 
     }
 
-    // If we are here, the server sent the first question or signal
     bool session_active = true;
     int server_fd = SSL_get_fd(ssl);
     int stdin_fd = fileno(stdin);
     int max_fd = (server_fd > stdin_fd) ? server_fd : stdin_fd;
 
     while (session_active) {
-        // Re-process the first_check header we already read if it was a question
         PacketHeader current_h = first_check;
-        bool skip_read = true; // For the very first iteration
+        bool skip_read = true;
 
         while (session_active) {
             if (!skip_read) {
@@ -125,7 +118,7 @@ bool start_exam_session(SSL *ssl) {
                 ExamQuestionPayload q;
                 SSL_read(ssl, &q, sizeof(q));
                 printf(CLEAR BLUE "====================================================\n" RESET);
-                printf(BOLD " OMNITEST SECURE CAMPUS - EXAM IN PROGRESS\n" RESET);
+                printf(BOLD "TESTSIMULATOR SECURE CAMPUS - EXAM IN PROGRESS\n" RESET);
                 printf(" Time Remaining: %d seconds\n", q.time_remaining);
                 printf(BOLD "\n Q%d: %s\n" RESET, q.question_id, q.question_text);
                 for (int i = 0; i < 4; i++) printf("  [%d] %s\n", i, q.options[i]);
@@ -158,7 +151,7 @@ int main() {
     SSL_CTX *ctx = create_context(false);
     bool exam_finished = false;
 
-    printf(YELLOW BOLD "OmniTest Secure Client: Connecting to Proctor...\n" RESET);
+    printf(YELLOW BOLD "TEST SIMULATOR Secure Client: Connecting to Server...\n" RESET);
 
     while (!exam_finished) {
         int sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -166,7 +159,7 @@ int main() {
         inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr);
 
         if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-            printf(RED "Proctor Node Offline. Retrying in 5s...\n" RESET);
+            printf(RED "Server Node Offline. Retrying in 5s...\n" RESET);
             close(sock);
             sleep(5);
             continue;
@@ -183,11 +176,10 @@ int main() {
         }
 
         if (perform_login(ssl)) {
-            // Check if start_exam_session returns true (Exam taken) or false (Still in Registration)
             if (start_exam_session(ssl)) {
                 exam_finished = true; 
             } else {
-                printf(CYAN "Status: Registered. Waiting for Proctor to signal 'START'...\n" RESET);
+                printf(CYAN "Status: Registered. Waiting for Server to signal 'START'...\n" RESET);
             }
         } else {
             printf(RED "Fatal: Authentication failed.\n" RESET);

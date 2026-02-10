@@ -12,7 +12,7 @@
 #define HASH_LEN 32
 #define ITERATIONS 10000
 
-// --- UI Macros for Server Console ---
+// --- UI Macros ---
 #define RESET   "\033[0m"
 #define BOLD    "\033[1m"
 #define RED     "\033[1;31m"
@@ -20,32 +20,26 @@
 #define YELLOW  "\033[1;33m"
 #define BLUE    "\033[1;34m"
 
-// --- Internal Structures ---
 typedef struct Student {
     char id[16];
-    char password_hash[128]; // Increased to hold HEX_SALT:HEX_HASH
+    char password_hash[128]; // Marit dela 64 HEX_SALT:HEX_HASH
     struct Student *next;
 } Student;
 
-// --- Global Database State ---
 static Student *head = NULL;
 static Question question_bank[100]; 
 static int total_questions = 0;
 static ServerMode current_mode = MODE_REGISTRATION;
 
-// Mutexes for Thread Safety
+// Mutexes
 static pthread_mutex_t db_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-// --- Helper Functions ---
 
 void to_hex(unsigned char *src, int len, char *dst) {
     for (int i = 0; i < len; i++) {
         sprintf(dst + (i * 2), "%02x", src[i]);
     }
 }
-
-// --- Mode Management ---
 
 void db_set_mode(ServerMode mode) {
     pthread_mutex_lock(&db_mutex);
@@ -57,8 +51,6 @@ ServerMode db_get_mode() {
     return current_mode;
 }
 
-// --- Student Management ---
-
 void db_save_student_to_disk(const char *id, const char *combined_hash) {
     pthread_mutex_lock(&file_mutex);
     FILE *fp = fopen("registered_students.txt", "a");
@@ -69,7 +61,6 @@ void db_save_student_to_disk(const char *id, const char *combined_hash) {
     pthread_mutex_unlock(&file_mutex);
 }
 
-// Internal helper to create student node without double-hashing when loading from disk
 void db_add_student_node(const char *id, const char *combined_hash) {
     Student *s = malloc(sizeof(Student));
     if (!s) return;
@@ -91,17 +82,17 @@ void db_add_student(const char *id, const char *password) {
     char hex_hash[HASH_LEN * 2 + 1];
     char combined[128];
 
-    // 1. Generate a random salt
+    // 1. Generam Salt random
     RAND_bytes(salt, SALT_LEN);
 
-    // 2. Derive the hash using PBKDF2
+    // 2. Obtinem hash folosind PBKDF2
     PKCS5_PBKDF2_HMAC(password, strlen(password), salt, SALT_LEN, 
                       ITERATIONS, EVP_sha256(), HASH_LEN, hash);
 
     to_hex(salt, SALT_LEN, hex_salt);
     to_hex(hash, HASH_LEN, hex_hash);
 
-    // 3. Format string and add to memory
+    // 3. Formatam stringul final ca "HEX_SALT:HEX_HASH"
     snprintf(combined, sizeof(combined), "%s:%s", hex_salt, hex_hash);
     db_add_student_node(id, combined);
 }
@@ -147,8 +138,6 @@ int db_verify_login(const char *id, const char *password) {
     }
     return 0;
 }
-
-// --- Question Management ---
 
 void db_load_questions() {
     FILE *fp = fopen("questions.txt", "r");
@@ -200,8 +189,6 @@ Question* db_get_question(int index) {
 int db_get_question_count(void) {
     return total_questions;
 }
-
-// --- Persistence & Lifecycle ---
 
 void db_log_result(const char* student_id, int score, int total) {
     pthread_mutex_lock(&file_mutex);

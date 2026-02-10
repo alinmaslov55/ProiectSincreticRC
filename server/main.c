@@ -13,7 +13,6 @@
 #include <sys/time.h>
 #include <time.h>
 
-// --- Configuration & Macros ---
 #define PORT 8080
 #define EXAM_DURATION_SEC 60
 
@@ -28,8 +27,6 @@ typedef struct {
     int socket;
     SSL_CTX *ctx;
 } client_data_t;
-
-// --- Helper Functions ---
 
 const char* p_name(PacketType type) {
     switch(type) {
@@ -52,12 +49,11 @@ FILE* open_thread_log() {
     FILE *fp = fopen(filename, "w");
     if (fp) {
         setvbuf(fp, NULL, _IOLBF, 0); 
-        fprintf(fp, "[%ld] --- PROCTOR SESSION START ---\n", time(NULL));
+        fprintf(fp, "[%ld] --- SERVER SESSION START ---\n", time(NULL));
     }
     return fp;
 }
 
-// --- Admin Console Thread ---
 void *admin_console(void *arg) {
     (void)arg;
     char command[64];
@@ -94,7 +90,6 @@ void *admin_console(void *arg) {
     return NULL;
 }
 
-// --- Student Handler Thread ---
 void *handle_student(void *arg) {
     client_data_t *data = (client_data_t*)arg;
     int client_sock = data->socket;
@@ -110,7 +105,6 @@ void *handle_student(void *arg) {
         int auth_attempts = 0;
         char student_id[16] = {0};
 
-        // 1. Auth/Registration Loop
         while (auth_attempts < 3 && !authenticated) {
             PacketHeader header;
             if (SSL_read(ssl, &header, sizeof(PacketHeader)) <= 0) break;
@@ -132,7 +126,6 @@ void *handle_student(void *arg) {
             }
         }
 
-        // 2. Examination Logic (Gated by Admin Mode)
         if (authenticated && db_get_mode() == MODE_EXAMINATION) {
             PacketHeader header;
             if (SSL_read(ssl, &header, sizeof(PacketHeader)) > 0 && header.type == REQ_EXAM_START) {
@@ -140,67 +133,68 @@ void *handle_student(void *arg) {
                 int total_qs = db_get_question_count();
                 if (total_qs <= 0) {
                     if (log_fp) fprintf(log_fp, "[ERROR] No questions in DB.\n");
-                    goto cleanup;
-                }
+                } else {
+                    int *indices = malloc(total_qs * sizeof(int));
+                    if (indices) {
+                        for (int i = 0; i < total_qs; i++) indices[i] = i;
 
-                // --- Fisher-Yates Shuffle Implementation ---
-                int *indices = malloc(total_qs * sizeof(int));
-                for (int i = 0; i < total_qs; i++) indices[i] = i;
+                        struct timeval tv;
+                        gettimeofday(&tv, NULL);
+                        unsigned int seed = (unsigned int)(tv.tv_usec ^ (unsigned long)pthread_self());
+                        
+                        for (int i = total_qs - 1; i > 0; i--) {
+                            int j = rand_r(&seed) % (i + 1);
+                            int temp = indices[i];
+                            indices[i] = indices[j];
+                            indices[j] = temp;
+                        }
 
-                struct timeval tv;
-                gettimeofday(&tv, NULL);
-                unsigned int seed = (unsigned int)(tv.tv_usec ^ (unsigned long)pthread_self());
-                
-                for (int i = total_qs - 1; i > 0; i--) {
-                    int j = rand_r(&seed) % (i + 1);
-                    int temp = indices[i];
-                    indices[i] = indices[j];
-                    indices[j] = temp;
-                }
+                        if (log_fp) fprintf(log_fp, "[EXAM] Started for %s (Randomized order)\n", student_id);
+                        
+                        time_t end_time = time(NULL) + EXAM_DURATION_SEC;
+                        int q_ptr_idx = 0, score = 0;
+                        setsockopt(client_sock, SOL_SOCKET, SO_RCVTIMEO, &(struct timeval){5, 0}, sizeof(struct timeval));
 
-                if (log_fp) fprintf(log_fp, "[EXAM] Started for %s (Randomized order)\n", student_id);
-                
-                time_t end_time = time(NULL) + EXAM_DURATION_SEC;
-                int q_ptr_idx = 0, score = 0;
-                setsockopt(client_sock, SOL_SOCKET, SO_RCVTIMEO, &(struct timeval){5, 0}, sizeof(struct timeval));
+                        while (q_ptr_idx < total_qs && time(NULL) < end_time) {
+                            Question *q = db_get_question(indices[q_ptr_idx]);
+                            
+                            ExamQuestionPayload q_pay;
+                            memset(&q_pay, 0, sizeof(q_pay));
+                            q_pay.question_id = q->id;
+                            q_pay.time_remaining = (int)(end_time - time(NULL));
+                            strncpy(q_pay.question_text, q->text, 255);
+                            for(int i=0; i<4; i++) strncpy(q_pay.options[i], q->options[i], 63);
 
-                // 3. Quiz Cycle
-                while (q_ptr_idx < total_qs && time(NULL) < end_time) {
-                    Question *q = db_get_question(indices[q_ptr_idx]);
-                    
-                    ExamQuestionPayload q_pay;
-                    memset(&q_pay, 0, sizeof(q_pay));
-                    q_pay.question_id = q->id;
-                    q_pay.time_remaining = (int)(end_time - time(NULL));
-                    strncpy(q_pay.question_text, q->text, 255);
-                    for(int i=0; i<4; i++) strncpy(q_pay.options[i], q->options[i], 63);
+                            SSL_write(ssl, &(PacketHeader){MSG_EXAM_QUESTION, sizeof(q_pay)}, sizeof(PacketHeader));
+                            SSL_write(ssl, &q_pay, sizeof(q_pay));
 
-                    SSL_write(ssl, &(PacketHeader){MSG_EXAM_QUESTION, sizeof(q_pay)}, sizeof(PacketHeader));
-                    SSL_write(ssl, &q_pay, sizeof(q_pay));
+                            PacketHeader sub_h;
+                            if (SSL_read(ssl, &sub_h, sizeof(PacketHeader)) > 0 && sub_h.type == MSG_SUBMISSION) {
+                                SubmissionPayload s_pay;
+                                SSL_read(ssl, &s_pay, sizeof(SubmissionPayload));
+                                if (atoi(s_pay.answer_text) == q->correct_option) score++;
+                                SSL_write(ssl, &(PacketHeader){RES_SUBMISSION_ACK, 0}, sizeof(PacketHeader));
+                                q_ptr_idx++;
+                            } else {
+                                // Break if client disconnects or times out during quiz
+                                break;
+                            }
+                        }
 
-                    PacketHeader sub_h;
-                    if (SSL_read(ssl, &sub_h, sizeof(PacketHeader)) > 0 && sub_h.type == MSG_SUBMISSION) {
-                        SubmissionPayload s_pay;
-                        SSL_read(ssl, &s_pay, sizeof(SubmissionPayload));
-                        if (atoi(s_pay.answer_text) == q->correct_option) score++;
-                        SSL_write(ssl, &(PacketHeader){RES_SUBMISSION_ACK, 0}, sizeof(PacketHeader));
-                        q_ptr_idx++;
+                        db_log_result(student_id, score, total_qs);
+                        ExamResultPayload r_pay = {score, total_qs};
+                        SSL_write(ssl, &(PacketHeader){MSG_EXAM_OVER, sizeof(r_pay)}, sizeof(PacketHeader));
+                        SSL_write(ssl, &r_pay, sizeof(r_pay));
+                        
+                        free(indices);
                     }
                 }
-
-                db_log_result(student_id, score, total_qs);
-                ExamResultPayload r_pay = {score, total_qs};
-                SSL_write(ssl, &(PacketHeader){MSG_EXAM_OVER, sizeof(r_pay)}, sizeof(PacketHeader));
-                SSL_write(ssl, &r_pay, sizeof(r_pay));
-                
-                free(indices);
             }
         } else if (authenticated && db_get_mode() == MODE_REGISTRATION) {
             if (log_fp) fprintf(log_fp, "[REG] %s registered/verified. Session parked.\n", student_id);
         }
     }
 
-cleanup:
     SSL_shutdown(ssl);
     if (log_fp) fclose(log_fp);
     SSL_free(ssl);
@@ -226,7 +220,7 @@ int main() {
     }
 
     listen(server_sock, 10);
-    printf(BLUE BOLD "Proctor Node: " GREEN "ONLINE" RESET "\n");
+    printf(BLUE BOLD "Server Node: " GREEN "ONLINE" RESET "\n");
 
     pthread_t admin_tid;
     pthread_create(&admin_tid, NULL, admin_console, NULL);
